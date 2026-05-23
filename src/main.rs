@@ -51,7 +51,17 @@ enum Cmd {
         sliding: bool,
     },
     /// 錄音 → 結束後整段精準轉錄
-    Rec,
+    Rec {
+        /// 標出說話者（diarization）
+        #[arg(long)]
+        diarize: bool,
+        /// 指定說話者人數（不給則自動估算）
+        #[arg(long)]
+        speakers: Option<i32>,
+        /// 自動估算時的合併門檻（越高越願意合併、群越少；預設 0.7）
+        #[arg(long)]
+        threshold: Option<f32>,
+    },
     /// 轉現成音檔／影片
     File {
         path: String,
@@ -124,7 +134,11 @@ fn main() {
         Cmd::Models { ref action } => cmd_models(action),
         Cmd::Doctor => cmd_doctor(&cfg),
         Cmd::Mics => cmd_mics(),
-        Cmd::Rec => cmd_rec(&cfg, model_override.as_deref()),
+        Cmd::Rec {
+            diarize,
+            speakers,
+            threshold,
+        } => cmd_rec(&cfg, model_override.as_deref(), diarize, speakers, threshold),
         Cmd::Live { sliding } => cmd_live(&cfg, model_override.as_deref(), sliding),
         Cmd::Update => {
             ui::info("update：請重跑安裝指令或 git pull（自動更新建置中）");
@@ -163,18 +177,30 @@ fn cmd_file(
 
     let segs = transcribe::transcribe_file(&model, &samples, &cfg.lang, cfg.beam)?;
     let out_path = Path::new(path).with_extension("txt");
+    emit_result(&segs, &samples, cfg, &out_path, diarize, speakers, threshold)
+}
 
+/// 輸出逐字稿：開 diarize 時附 [說話者 N]，否則時間戳逐行。file / rec 共用。
+fn emit_result(
+    segs: &[Segment],
+    samples: &[f32],
+    cfg: &Config,
+    out_path: &Path,
+    diarize: bool,
+    speakers: Option<i32>,
+    threshold: Option<f32>,
+) -> Result<()> {
     if diarize {
         ui::info("說話者分離中…");
-        let turns = diarize::diarize(&samples, speakers, threshold.unwrap_or(0.7))?;
+        let turns = diarize::diarize(samples, speakers, threshold.unwrap_or(0.7))?;
         let to_trad = cfg.to_traditional;
-        let body = diarize::merge_lines(&segs, &turns, |s| trad::to_traditional(&s.text, to_trad));
+        let body = diarize::merge_lines(segs, &turns, |s| trad::to_traditional(&s.text, to_trad));
         print!("{body}");
-        std::fs::write(&out_path, &body).context("寫入逐字稿失敗")?;
+        std::fs::write(out_path, &body).context("寫入逐字稿失敗")?;
         ui::ok(&format!("逐字稿（含說話者）：{}", out_path.display()));
         Ok(())
     } else {
-        emit_segments(&segs, cfg, &out_path)
+        emit_segments(segs, cfg, out_path)
     }
 }
 
@@ -231,7 +257,13 @@ fn cmd_mics() -> Result<()> {
     Ok(())
 }
 
-fn cmd_rec(cfg: &Config, model_override: Option<&str>) -> Result<()> {
+fn cmd_rec(
+    cfg: &Config,
+    model_override: Option<&str>,
+    diarize: bool,
+    speakers: Option<i32>,
+    threshold: Option<f32>,
+) -> Result<()> {
     let model_name = model_override.unwrap_or(&cfg.model);
     let model = models::resolve(model_name, false)?;
     transcribe::init_quiet();
@@ -256,7 +288,15 @@ fn cmd_rec(cfg: &Config, model_override: Option<&str>) -> Result<()> {
 
     ui::info(&format!("轉錄中（{model_name} + beam {}）…", cfg.beam));
     let segs = transcribe::transcribe_file(&model, &samples, &cfg.lang, cfg.beam)?;
-    emit_segments(&segs, cfg, &outdir.join(format!("{stamp}.txt")))?;
+    emit_result(
+        &segs,
+        &samples,
+        cfg,
+        &outdir.join(format!("{stamp}.txt")),
+        diarize,
+        speakers,
+        threshold,
+    )?;
     ui::ok(&format!("原始錄音：{}", wav.display()));
     Ok(())
 }
