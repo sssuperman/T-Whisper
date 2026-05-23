@@ -47,8 +47,12 @@ fn pick_device(mic: &str) -> Result<cpal::Device> {
         .context("找不到符合的輸入裝置，且無預設裝置")
 }
 
-/// 錄音直到 `stop` 為 true；回傳 (16k mono f32, 選用裝置名稱)。
-pub fn record(mic: &str, stop: Arc<AtomicBool>) -> Result<(Vec<f32>, String)> {
+/// 共用的擷取緩衝（native rate mono f32，由 cpal callback 持續 append）。
+pub type SharedBuf = Arc<Mutex<Vec<f32>>>;
+
+/// 開啟輸入串流，把 mono f32 持續寫入回傳的 buffer。
+/// 回傳 (串流, buffer, native 取樣率, 裝置名稱)。串流需由呼叫端保活。
+pub fn open_stream(mic: &str) -> Result<(cpal::Stream, SharedBuf, u32, String)> {
     let device = pick_device(mic)?;
     let dev_name = device.name().unwrap_or_else(|_| "未知".into());
     let supported = device
@@ -59,7 +63,7 @@ pub fn record(mic: &str, stop: Arc<AtomicBool>) -> Result<(Vec<f32>, String)> {
     let fmt = supported.sample_format();
     let stream_config: cpal::StreamConfig = supported.into();
 
-    let buf = Arc::new(Mutex::new(Vec::<f32>::new()));
+    let buf: SharedBuf = Arc::new(Mutex::new(Vec::<f32>::new()));
     let err_fn = |e| eprintln!("錄音錯誤: {e}");
 
     macro_rules! build {
@@ -87,16 +91,18 @@ pub fn record(mic: &str, stop: Arc<AtomicBool>) -> Result<(Vec<f32>, String)> {
         other => bail!("不支援的取樣格式：{other:?}"),
     }
     .context("建立錄音串流失敗")?;
-
     stream.play().context("啟動錄音失敗")?;
+    Ok((stream, buf, sample_rate, dev_name))
+}
+
+/// 錄音直到 `stop` 為 true；回傳 (16k mono f32, 裝置名稱)。
+pub fn record(mic: &str, stop: Arc<AtomicBool>) -> Result<(Vec<f32>, String)> {
+    let (stream, buf, sample_rate, dev_name) = open_stream(mic)?;
     while !stop.load(Ordering::Relaxed) {
         std::thread::sleep(Duration::from_millis(100));
     }
     drop(stream);
-
-    let samples = Arc::try_unwrap(buf)
-        .map(|m| m.into_inner().unwrap_or_default())
-        .unwrap_or_default();
+    let samples = std::mem::take(&mut *buf.lock().unwrap());
     Ok((audio::resample_to_16k(&samples, sample_rate), dev_name))
 }
 
