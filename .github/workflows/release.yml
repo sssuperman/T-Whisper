@@ -1,0 +1,38 @@
+name: release
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-universal:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+
+      - name: Ensure cmake
+        run: brew list cmake >/dev/null 2>&1 || brew install cmake
+
+      - name: Build universal binary
+        run: |
+          cargo build --release --target aarch64-apple-darwin
+          cargo build --release --target x86_64-apple-darwin
+          mkdir -p dist
+          lipo -create -output dist/t-whisper \
+            target/aarch64-apple-darwin/release/t-whisper \
+            target/x86_64-apple-darwin/release/t-whisper
+          lipo -info dist/t-whisper
+          chmod +x dist/t-whisper
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/t-whisper
+          generate_release_notes: true

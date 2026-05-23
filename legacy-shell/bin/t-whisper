@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+# t-whisper — 本機中文語音轉錄工具（信誌科技 T-Whisper）
+# 子指令：live / rec / file / trad / models / mics / doctor / update
+set -uo pipefail
+
+# ---- 解析自身位置（含 symlink）→ 找 libexec ----
+SOURCE="${BASH_SOURCE[0]}"
+while [[ -h "$SOURCE" ]]; do
+  _dir="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"; [[ "$SOURCE" != /* ]] && SOURCE="$_dir/$SOURCE"
+done
+BIN_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+TW_ROOT="$(cd "$BIN_DIR/.." && pwd)"
+TW_LIBEXEC="$TW_ROOT/libexec"
+export TW_ROOT TW_LIBEXEC
+
+# shellcheck source=libexec/common.sh
+source "$TW_LIBEXEC/common.sh"
+TW_VERSION="$(cat "$TW_ROOT/VERSION" 2>/dev/null || echo '?')"
+
+usage() {
+  cat >&2 <<EOF
+T-Whisper $TW_VERSION — 本機中文語音轉錄（離線、繁體、Apple Silicon 加速）
+
+用法：t-whisper <指令> [選項]
+
+指令：
+  live [--sliding]      即時轉錄。預設 VAD（等停頓、最準）；--sliding 邊講邊吐（即時）
+  rec [--list-mics]     錄音 → 結束後整段精準轉錄（最乾淨：絕對時間戳、零重複）
+  file <檔案>           轉現成音檔／影片（mp3/mp4/m4a/wav…）
+  trad <檔案|資料夾>    簡轉繁（OpenCC s2twp）；也吃 stdin
+  models [list|pull <名稱>|rm <名稱>]   模型管理（turbo / large-v3）
+  mics                  列出麥克風輸入裝置
+  doctor                檢查依賴／模型／麥克風／PATH
+  update                更新到最新版
+  --help / --version
+
+全域選項（覆蓋設定檔 ${TW_CONFIG}）：
+  --model turbo|large-v3   轉錄模型（turbo 快、large-v3 準）
+  --lang  zh|en|ja…        語言（預設 zh）
+  --beam  N                beam search 寬度（越大越準越慢）
+  --mic   <名稱關鍵字>     指定麥克風（如 --mic MacBook）
+
+範例：
+  t-whisper rec                      # 開會錄音 → 結束後出乾淨逐字稿
+  t-whisper live                     # 即時看字幕（最準）
+  t-whisper live --sliding           # 即時邊講邊吐
+  t-whisper file 演講.mp4            # 把影片轉成逐字稿
+  t-whisper file 講稿.wav --model large-v3   # 用最準模型
+EOF
+}
+
+tw_load_config
+
+sub="${1:-}"; shift 2>/dev/null || true
+case "$sub" in
+  ""|-h|--help|help) usage; exit 0 ;;
+  -v|--version|version) echo "T-Whisper $TW_VERSION"; exit 0 ;;
+esac
+
+# ---- 解析全域旗標，其餘留給子指令 ----
+args=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --model) TW_MODEL="${2:?--model 需要值}"; shift 2 ;;
+    --lang)  TW_LANG="${2:?--lang 需要值}"; shift 2 ;;
+    --beam)  TW_BEAM="${2:?--beam 需要值}"; shift 2 ;;
+    --mic)   TW_MIC="${2:?--mic 需要值}"; shift 2 ;;
+    *)       args+=("$1"); shift ;;
+  esac
+done
+set -- "${args[@]+"${args[@]}"}"
+export TW_MODEL TW_LANG TW_BEAM TW_MIC TW_TRAD TW_OUTDIR   # 供 source 進來的子指令使用
+
+case "$sub" in
+  live|rec|file|trad|models|doctor|update)
+    # shellcheck source=/dev/null
+    source "$TW_LIBEXEC/$sub.sh"
+    "tw_cmd_$sub" "$@"
+    ;;
+  mics) tw_print_mics ;;
+  *) die "未知指令：$sub" "用 t-whisper --help 看用法" ;;
+esac

@@ -1,0 +1,3 @@
+/target
+*.txt.bak
+.DS_Store
