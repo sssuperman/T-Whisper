@@ -3,6 +3,7 @@ mod audio;
 mod capture;
 mod config;
 mod env;
+mod live;
 mod models;
 mod trad;
 mod transcribe;
@@ -107,10 +108,7 @@ fn main() {
         Cmd::Doctor => cmd_doctor(&cfg),
         Cmd::Mics => cmd_mics(),
         Cmd::Rec => cmd_rec(&cfg, model_override.as_deref()),
-        Cmd::Live { .. } => {
-            ui::warn("live 即時模組（cpal + VAD + 滑動渲染）建置中，下一步提供");
-            Ok(())
-        }
+        Cmd::Live { sliding } => cmd_live(&cfg, model_override.as_deref(), sliding),
         Cmd::Update => {
             ui::info("update：請重跑安裝指令或 git pull（自動更新建置中）");
             Ok(())
@@ -173,6 +171,17 @@ fn timestamp() -> String {
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "recording".into())
+}
+
+fn cmd_live(cfg: &Config, model_override: Option<&str>, sliding: bool) -> Result<()> {
+    // sliding 求即時 → 預設 turbo；VAD 用設定檔模型（可較準）
+    let model_name = if sliding {
+        model_override.unwrap_or("turbo")
+    } else {
+        model_override.unwrap_or(&cfg.model)
+    };
+    let model = models::resolve(model_name, false)?;
+    live::run(cfg, &model, model_name, sliding)
 }
 
 fn cmd_mics() -> Result<()> {

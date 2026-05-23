@@ -59,12 +59,12 @@ Whisper 是 30 秒批次模型，「即時」靠工程：cpal 持續擷取 → S
 2. ✅ 最小驗證：whisper-rs 編譯（含 whisper.cpp）+ Metal + 轉錄 test/sample.wav
 3. ✅ file / trad / doctor / models / config（批次管線，純 Rust 解碼 symphonia）
 4. ✅ rec（cpal 錄音 + Ctrl+C + 整段轉錄 + 存 WAV/TXT）+ mics
-5. ☐ live（cpal + VAD + 滑動渲染）— 唯一未完成
+5. ✅ live（cpal 連續擷取 + 能量 VAD 自動校準 + 滑動單行渲染）— 聲學端到端實測通過
 6. ✅ universal binary（lipo arm64+x86_64）+ install.sh + uninstall.sh + README + Makefile + GitHub Actions release workflow
 
 ## 現況（2026-05-23）
 
-可用指令：file / rec / mics / trad / models / doctor / --version。
+可用指令：file / rec / live / mics / trad / models / doctor / --version（全部完成）。
 單一執行檔，whisper.cpp 編入，Metal(AS)/CPU(Intel)，繁體（opencc）。唯一外部依賴 opencc。
 分發：`make universal` 產 universal binary；推 git tag `v*` 觸發 CI 發 release；學長用 `curl … install.sh | bash` 一行安裝。
-**待辦**：`live` 即時模式（cpal 連續擷取 + Silero VAD 切句 + 滑動視窗 + 單行渲染）。
+**v1 功能完整**。後續可優化：VAD 由能量式升級為 Silero（更抗噪）；sliding 前綴穩定化（LocalAgreement）。
