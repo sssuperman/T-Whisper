@@ -17,7 +17,7 @@ use std::io::{IsTerminal, Read};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use transcribe::Segment;
 
 #[derive(Parser)]
@@ -186,8 +186,13 @@ fn cmd_file(
     ui::info("前處理音訊（→ 16k mono）…");
     let samples = audio::decode_to_whisper(path)?;
     ui::info(&format!("轉錄中（{} + beam {}）…", model_name, cfg.beam));
-
+    let t0 = Instant::now();
     let segs = transcribe::transcribe_file(&model, &samples, &cfg.lang, cfg.beam)?;
+    ui::info(&format!(
+        "轉錄耗時 {:.1}s（音長 {}s）",
+        t0.elapsed().as_secs_f32(),
+        samples.len() / 16000
+    ));
     let out_path = Path::new(path).with_extension("txt");
     emit_result(&segs, &samples, cfg, &out_path, diarize, speakers, threshold)
 }
@@ -204,7 +209,9 @@ fn emit_result(
 ) -> Result<()> {
     if diarize {
         ui::info("說話者分離中…");
+        let t0 = Instant::now();
         let turns = diarize::diarize(samples, speakers, threshold.unwrap_or(0.7))?;
+        ui::info(&format!("說話者分離耗時 {:.1}s", t0.elapsed().as_secs_f32()));
         let to_trad = cfg.to_traditional;
         let body = diarize::merge_lines(segs, &turns, |s| trad::to_traditional(&s.text, to_trad));
         print!("{body}");
@@ -323,7 +330,13 @@ fn cmd_rec(
     capture::write_wav_16k(&wav, &samples)?;
 
     ui::info(&format!("轉錄中（{model_name} + beam {}）…", cfg.beam));
+    let t0 = Instant::now();
     let segs = transcribe::transcribe_file(&model, &samples, &cfg.lang, cfg.beam)?;
+    ui::info(&format!(
+        "轉錄耗時 {:.1}s（音長 {}s）",
+        t0.elapsed().as_secs_f32(),
+        samples.len() / 16000
+    ));
     emit_result(
         &segs,
         &samples,
