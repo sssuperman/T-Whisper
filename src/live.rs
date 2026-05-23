@@ -61,6 +61,58 @@ fn rms(frame: &[f32]) -> f32 {
     (sum / frame.len() as f32).sqrt()
 }
 
+/// 能量式 VAD：開頭量噪音地板，之後在靜音時持續適應；門檻 = 地板×2，夾在 [0.006, 0.04]。
+struct Vad {
+    calib_frames_needed: usize,
+    calib_count: usize,
+    calib_sum: f32,
+    noise_floor: f32,
+    calibrated: bool,
+    ready_announced: bool,
+}
+
+impl Vad {
+    fn new(_rate: u32) -> Self {
+        Vad {
+            calib_frames_needed: 20, // ~0.6s（30ms/frame）
+            calib_count: 0,
+            calib_sum: 0.0,
+            noise_floor: 0.0,
+            calibrated: false,
+            ready_announced: false,
+        }
+    }
+    /// 餵入一個 frame 的能量；回傳是否已校準完成（仍在校準時回 false）。
+    fn feed_calibration(&mut self, level: f32) -> bool {
+        if self.calibrated {
+            return true;
+        }
+        self.calib_sum += level;
+        self.calib_count += 1;
+        if self.calib_count >= self.calib_frames_needed {
+            self.noise_floor = self.calib_sum / self.calib_count as f32;
+            self.calibrated = true;
+        }
+        self.calibrated
+    }
+    /// 校準剛完成的那一刻回傳一次 true。
+    fn just_ready(&mut self) -> bool {
+        if self.calibrated && !self.ready_announced {
+            self.ready_announced = true;
+            true
+        } else {
+            false
+        }
+    }
+    fn threshold(&self) -> f32 {
+        (self.noise_floor * 2.0).clamp(0.006, 0.04)
+    }
+    /// 靜音時慢慢跟隨環境噪音（避免長期飄移）。
+    fn adapt(&mut self, level: f32) {
+        self.noise_floor = self.noise_floor * 0.97 + level * 0.03;
+    }
+}
+
 // ---- VAD 模式：偵測停頓出整句（committed lines）----
 fn run_vad(
     tr: &Transcriber,
@@ -74,16 +126,14 @@ fn run_vad(
     let max_utter = rate as usize * 20; // 20s 上限
     let min_utter = rate as usize / 4; // 0.25s 下限
 
+    let debug = std::env::var("T_WHISPER_DEBUG").is_ok();
     let mut pending: Vec<f32> = Vec::new();
     let mut utter: Vec<f32> = Vec::new();
     let mut in_speech = false;
     let mut silence_ms = 0usize;
 
-    // 自動校準：前 ~0.5s 量環境噪音
-    let mut calib: Vec<f32> = Vec::new();
-    let mut threshold = 0.012f32;
-    let mut calibrated = false;
-
+    // 噪音地板：前 ~0.6s 校準，之後在靜音時持續適應。
+    let mut vad = Vad::new(rate);
     let mut session = String::new();
 
     while !stop.load(Ordering::Relaxed) {
@@ -91,18 +141,19 @@ fn run_vad(
         pending.extend(drain(buf));
         while pending.len() >= frame_len {
             let frame: Vec<f32> = pending.drain(..frame_len).collect();
+            let level = rms(&frame);
 
-            if !calibrated {
-                calib.extend_from_slice(&frame);
-                if calib.len() >= rate as usize / 2 {
-                    threshold = (rms(&calib) * 3.0).max(0.012);
-                    calibrated = true;
+            if !vad.feed_calibration(level) {
+                continue; // 仍在校準
+            }
+            if vad.just_ready() {
+                ui::ok("環境校準完成，可以開始說話了");
+                if debug {
+                    ui::dim(&format!("  噪音地板={:.4} 門檻={:.4}", vad.noise_floor, vad.threshold()));
                 }
-                continue;
             }
 
-            let level = rms(&frame);
-            if level > threshold {
+            if level > vad.threshold() {
                 in_speech = true;
                 silence_ms = 0;
                 utter.extend_from_slice(&frame);
@@ -114,6 +165,8 @@ fn run_vad(
                     in_speech = false;
                     silence_ms = 0;
                 }
+            } else {
+                vad.adapt(level); // 靜音時慢慢跟著環境噪音調整
             }
             if utter.len() >= max_utter {
                 flush_vad(tr, cfg, rate, &mut utter, &mut session, min_utter);
@@ -168,9 +221,7 @@ fn run_sliding(
     let mut window: Vec<f32> = Vec::new();
     let mut pending: Vec<f32> = Vec::new();
     let mut silence_ms = 0usize;
-    let mut threshold = 0.012f32;
-    let mut calib: Vec<f32> = Vec::new();
-    let mut calibrated = false;
+    let mut vad = Vad::new(rate);
     let mut session = String::new();
     let mut last_line = String::new();
 
@@ -180,28 +231,27 @@ fn run_sliding(
         let mut had_speech = false;
         while pending.len() >= frame_len {
             let frame: Vec<f32> = pending.drain(..frame_len).collect();
-            if !calibrated {
-                calib.extend_from_slice(&frame);
-                if calib.len() >= rate as usize / 2 {
-                    threshold = (rms(&calib) * 3.0).max(0.012);
-                    calibrated = true;
-                }
+            let level = rms(&frame);
+            if !vad.feed_calibration(level) {
                 continue;
             }
-            let level = rms(&frame);
+            if vad.just_ready() {
+                ui::ok("環境校準完成，可以開始說話了");
+            }
             window.extend_from_slice(&frame);
-            if level > threshold {
+            if level > vad.threshold() {
                 had_speech = true;
                 silence_ms = 0;
             } else {
                 silence_ms += 30;
+                vad.adapt(level);
             }
         }
         if window.len() > window_max {
             let cut = window.len() - window_max;
             window.drain(..cut);
         }
-        if !calibrated || window.is_empty() {
+        if window.is_empty() {
             continue;
         }
 
