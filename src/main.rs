@@ -61,6 +61,9 @@ enum Cmd {
         /// 指定說話者人數（不給則自動估算）
         #[arg(long)]
         speakers: Option<i32>,
+        /// 自動估算時的合併門檻（越高越願意合併、群越少；預設 0.7）
+        #[arg(long)]
+        threshold: Option<f32>,
     },
     /// 簡轉繁（檔案／資料夾／stdin）
     Trad {
@@ -112,7 +115,8 @@ fn main() {
             ref path,
             diarize,
             speakers,
-        } => cmd_file(path, &cfg, model_override.as_deref(), diarize, speakers),
+            threshold,
+        } => cmd_file(path, &cfg, model_override.as_deref(), diarize, speakers, threshold),
         Cmd::Trad {
             ref target,
             ref out,
@@ -144,6 +148,7 @@ fn cmd_file(
     model_override: Option<&str>,
     diarize: bool,
     speakers: Option<i32>,
+    threshold: Option<f32>,
 ) -> Result<()> {
     if !std::path::Path::new(path).is_file() {
         anyhow::bail!("找不到檔案：{path}");
@@ -161,7 +166,7 @@ fn cmd_file(
 
     if diarize {
         ui::info("說話者分離中…");
-        let turns = diarize::diarize(&samples, speakers)?;
+        let turns = diarize::diarize(&samples, speakers, threshold.unwrap_or(0.7))?;
         let to_trad = cfg.to_traditional;
         let body = diarize::merge_lines(&segs, &turns, |s| trad::to_traditional(&s.text, to_trad));
         print!("{body}");

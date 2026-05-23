@@ -15,8 +15,10 @@ fn model_paths() -> (PathBuf, PathBuf) {
     (d.join("segmentation.onnx"), d.join("embedding.onnx"))
 }
 
-/// 對 16k mono 音訊做說話者分離。num_speakers=None 表示自動估算人數。
-pub fn diarize(samples_16k: &[f32], num_speakers: Option<i32>) -> Result<Vec<Turn>> {
+/// 對 16k mono 音訊做說話者分離。
+/// num_speakers=None → 自動估算（用 threshold 決定要不要合併群；越高越少群）。
+/// 指定 num_speakers 時 threshold 會被忽略。
+pub fn diarize(samples_16k: &[f32], num_speakers: Option<i32>, threshold: f32) -> Result<Vec<Turn>> {
     let (seg, emb) = model_paths();
     if !seg.is_file() || !emb.is_file() {
         anyhow::bail!(
@@ -26,9 +28,9 @@ pub fn diarize(samples_16k: &[f32], num_speakers: Option<i32>) -> Result<Vec<Tur
     }
 
     let cfg = sherpa_rs::diarize::DiarizeConfig {
-        // num_clusters <=0 → 用 threshold 自動估算人數
+        // num_clusters <=0 → 用 threshold 自動估算人數（越高越願意合併 → 群越少）
         num_clusters: Some(num_speakers.unwrap_or(-1)),
-        threshold: Some(0.5),
+        threshold: Some(threshold),
         min_duration_on: Some(0.3),
         min_duration_off: Some(0.5),
         provider: None,
