@@ -6,7 +6,7 @@
 set -euo pipefail
 
 # >>> 發佈前改成你的 repo（或用環境變數 TW_REPO 覆蓋）<<<
-REPO="${TW_REPO:-T-Intelligence-tw/T-Whisper}"
+REPO="${TW_REPO:-sssuperman/T-Whisper}"
 BIN_DIR="$HOME/.local/bin"
 ASSET_URL="https://github.com/$REPO/releases/latest/download/t-whisper"
 

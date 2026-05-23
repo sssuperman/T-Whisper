@@ -9,7 +9,7 @@
 ## 安裝
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/<你的GH>/T-Whisper/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/sssuperman/T-Whisper/main/install.sh | bash
 ```
 
 whisper.cpp 已**編入執行檔**，安裝時不需裝 whisper-cpp；只會裝 `opencc`（繁體輸出用）。
