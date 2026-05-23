@@ -17,6 +17,7 @@ use std::io::{IsTerminal, Read};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 use transcribe::Segment;
 
 #[derive(Parser)]
@@ -50,7 +51,7 @@ enum Cmd {
         #[arg(long)]
         sliding: bool,
     },
-    /// 錄音 → 結束後整段精準轉錄
+    /// 錄音 → 結束後整段精準轉錄（錄音中顯示即時粗略預覽）
     Rec {
         /// 標出說話者（diarization）
         #[arg(long)]
@@ -61,6 +62,9 @@ enum Cmd {
         /// 自動估算時的合併門檻（越高越願意合併、群越少；預設 0.7）
         #[arg(long)]
         threshold: Option<f32>,
+        /// 關閉錄音中的即時預覽
+        #[arg(long)]
+        no_preview: bool,
     },
     /// 轉現成音檔／影片
     File {
@@ -138,7 +142,15 @@ fn main() {
             diarize,
             speakers,
             threshold,
-        } => cmd_rec(&cfg, model_override.as_deref(), diarize, speakers, threshold),
+            no_preview,
+        } => cmd_rec(
+            &cfg,
+            model_override.as_deref(),
+            diarize,
+            speakers,
+            threshold,
+            no_preview,
+        ),
         Cmd::Live { sliding } => cmd_live(&cfg, model_override.as_deref(), sliding),
         Cmd::Update => {
             ui::info("update：請重跑安裝指令或 git pull（自動更新建置中）");
@@ -263,22 +275,46 @@ fn cmd_rec(
     diarize: bool,
     speakers: Option<i32>,
     threshold: Option<f32>,
+    no_preview: bool,
 ) -> Result<()> {
     let model_name = model_override.unwrap_or(&cfg.model);
-    let model = models::resolve(model_name, false)?;
+    let model = models::resolve(model_name, false)?; // 結束後精準轉錄用
     transcribe::init_quiet();
 
     let stop = Arc::new(AtomicBool::new(false));
     let s2 = stop.clone();
     ctrlc::set_handler(move || s2.store(true, Ordering::Relaxed)).ok();
 
-    ui::info("● 錄音中…（按 Ctrl+C 停止並開始精準轉錄）");
-    let (samples, dev) = capture::record(&cfg.mic, stop)?;
-    if samples.is_empty() {
+    let (stream, buf, native_rate, dev) = capture::open_stream(&cfg.mic)?;
+    ui::info(&format!("● 錄音中（裝置：{dev}）…按 Ctrl+C 停止並精準轉錄"));
+
+    if no_preview {
+        while !stop.load(Ordering::Relaxed) {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    } else {
+        ui::info("（下方為即時粗略預覽，最終以結束後的精準轉錄為準）");
+        ui::info("------------------------------------------------------------");
+        // 預覽用 turbo（快、beam 1）；沒下載就退回主模型
+        let preview_path = models::path("turbo").unwrap_or_else(|| model.clone());
+        match transcribe::Transcriber::new(&preview_path, &cfg.lang, 1) {
+            Ok(ptr) => live::preview_loop(&ptr, cfg, &buf, native_rate, &stop),
+            Err(_) => {
+                while !stop.load(Ordering::Relaxed) {
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            }
+        }
+    }
+    drop(stream);
+
+    let full = std::mem::take(&mut *buf.lock().unwrap());
+    if full.is_empty() {
         ui::warn("沒有錄到音訊（請到 系統設定 → 隱私權與安全性 → 麥克風 開啟權限）");
         return Ok(());
     }
-    ui::info(&format!("裝置：{dev}，長度約 {} 秒", samples.len() / 16000));
+    let samples = audio::resample_to_16k(&full, native_rate);
+    ui::info(&format!("錄音長度約 {} 秒", samples.len() / 16000));
 
     let outdir = PathBuf::from(&cfg.outdir);
     std::fs::create_dir_all(&outdir)?;
