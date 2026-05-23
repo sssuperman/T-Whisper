@@ -2,6 +2,7 @@
 mod audio;
 mod capture;
 mod config;
+mod diarize;
 mod env;
 mod live;
 mod models;
@@ -52,7 +53,15 @@ enum Cmd {
     /// 錄音 → 結束後整段精準轉錄
     Rec,
     /// 轉現成音檔／影片
-    File { path: String },
+    File {
+        path: String,
+        /// 標出說話者（diarization）
+        #[arg(long)]
+        diarize: bool,
+        /// 指定說話者人數（不給則自動估算）
+        #[arg(long)]
+        speakers: Option<i32>,
+    },
     /// 簡轉繁（檔案／資料夾／stdin）
     Trad {
         target: Option<String>,
@@ -99,7 +108,11 @@ fn main() {
     let model_override = cli.model.clone();
 
     let res = match cli.cmd {
-        Cmd::File { ref path } => cmd_file(path, &cfg, model_override.as_deref()),
+        Cmd::File {
+            ref path,
+            diarize,
+            speakers,
+        } => cmd_file(path, &cfg, model_override.as_deref(), diarize, speakers),
         Cmd::Trad {
             ref target,
             ref out,
@@ -125,7 +138,13 @@ fn main() {
     }
 }
 
-fn cmd_file(path: &str, cfg: &Config, model_override: Option<&str>) -> Result<()> {
+fn cmd_file(
+    path: &str,
+    cfg: &Config,
+    model_override: Option<&str>,
+    diarize: bool,
+    speakers: Option<i32>,
+) -> Result<()> {
     if !std::path::Path::new(path).is_file() {
         anyhow::bail!("找不到檔案：{path}");
     }
@@ -139,7 +158,19 @@ fn cmd_file(path: &str, cfg: &Config, model_override: Option<&str>) -> Result<()
 
     let segs = transcribe::transcribe_file(&model, &samples, &cfg.lang, cfg.beam)?;
     let out_path = Path::new(path).with_extension("txt");
-    emit_segments(&segs, cfg, &out_path)
+
+    if diarize {
+        ui::info("說話者分離中…");
+        let turns = diarize::diarize(&samples, speakers)?;
+        let to_trad = cfg.to_traditional;
+        let body = diarize::merge_lines(&segs, &turns, |s| trad::to_traditional(&s.text, to_trad));
+        print!("{body}");
+        std::fs::write(&out_path, &body).context("寫入逐字稿失敗")?;
+        ui::ok(&format!("逐字稿（含說話者）：{}", out_path.display()));
+        Ok(())
+    } else {
+        emit_segments(&segs, cfg, &out_path)
+    }
 }
 
 /// 印出 + 存檔（繁體、絕對時間戳）；file / rec 共用。

@@ -9,5 +9,6 @@ clap = { version = "4.6.1", features = ["derive"] }
 cpal = "0.17.3"
 ctrlc = "3.5.2"
 hound = "3.5.1"
+sherpa-rs = "0.6.8"
 symphonia = { version = "0.5.4", features = ["mp3", "aac", "isomp4", "wav", "pcm"] }
 whisper-rs = { version = "0.16.0", features = ["metal"] }
