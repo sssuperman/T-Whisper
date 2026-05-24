@@ -37,3 +37,34 @@ jobs:
           files: dist/t-whisper
           generate_release_notes: true
           token: ${{ github.token }}
+
+  # 發版後自動更新 Homebrew tap 的 formula（url + sha256）
+  # 需要在本 repo 設定 secret TAP_TOKEN：對 sssuperman/homebrew-tap 有 Contents:write 的 PAT
+  update-tap:
+    needs: build-universal
+    runs-on: ubuntu-latest
+    steps:
+      - name: Bump homebrew-tap formula
+        env:
+          TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if [ -z "$TAP_TOKEN" ]; then
+            echo "未設定 TAP_TOKEN secret，略過 formula 自動更新（請手動更新 tap）。"
+            exit 0
+          fi
+          URL="https://github.com/sssuperman/T-Whisper/releases/download/${TAG}/t-whisper"
+          curl -fsSL -o t-whisper "$URL"
+          SHA=$(sha256sum t-whisper | awk '{print $1}')
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/sssuperman/homebrew-tap.git" tap
+          cd tap
+          sed -i -E "s#releases/download/[^/]+/t-whisper#releases/download/${TAG}/t-whisper#" Formula/t-whisper.rb
+          sed -i -E "s#sha256 \"[a-f0-9]+\"#sha256 \"${SHA}\"#" Formula/t-whisper.rb
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/t-whisper.rb
+          if git diff --cached --quiet; then
+            echo "formula 無變更"; exit 0
+          fi
+          git commit -m "t-whisper ${TAG#v}"
+          git push
