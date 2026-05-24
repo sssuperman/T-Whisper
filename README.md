@@ -25,7 +25,7 @@ t-whisper doctor
 ## 用法
 
 ```bash
-t-whisper rec                 # 開會／演講：錄音 → Ctrl+C 後出乾淨逐字稿（最推薦）
+t-whisper rec                 # 開會／演講：錄音（含即時預覽）→ Ctrl+C 後出乾淨逐字稿（最推薦）
 t-whisper file 演講.mp4       # 轉現成音檔／影片（mp3/mp4/m4a/wav…，純 Rust 解碼）
 t-whisper trad 字幕.srt       # 簡體字幕轉台灣繁體
 t-whisper mics                # 列出麥克風裝置
@@ -35,6 +35,20 @@ t-whisper live --sliding      # 即時轉錄（單行刷新，邊講邊出；用
 ```
 
 逐字稿預設存到 `~/whisper-transcripts/`，含**絕對時間戳、繁體**。
+
+## 說話者分離（誰在說話）
+
+在 `rec` 或 `file` 加 `--diarize`，逐字稿會標出 `[說話者 N]`（本機 sherpa-onnx，中文聲紋）：
+
+```bash
+t-whisper rec  --diarize --speakers 2     # 雙人會議：錄音 → 標說話者
+t-whisper file 訪談.mp4 --diarize --speakers 2
+t-whisper file 會議.m4a  --diarize         # 不指定人數則自動估算
+```
+
+- **已知人數請用 `--speakers N`**（會議/訪談通常知道）——比自動估算可靠很多。
+- 自動估算可用 `--threshold`（預設 0.7，越高群越少）微調；但仍以 `--speakers` 最穩。
+- 首次使用會自動下載分離模型（約 35MB），或先 `t-whisper models pull diarize`。
 
 ## 設定
 
@@ -66,6 +80,7 @@ outdir=~/whisper-transcripts
 - **沒錄到音／沒逐字稿**：系統設定 → 隱私權與安全性 → 麥克風，開啟終端機權限。
 - **想轉系統音訊（Teams／影片內部聲音）**：裝 BlackHole 虛擬聲卡把系統音導入，再 `t-whisper rec --mic BlackHole`。
 - **簡繁**：whisper 中文簡繁不定，本工具預設用 OpenCC s2twp 自動轉台灣繁體；關閉設 `to_traditional=0`。
+- **語言**：預設鎖 `zh`（中文最穩）。其他語言用 `--lang en`／`ja`…；不確定用 `--lang auto` 自動偵測。
 - **Intel Mac**：可用（CPU 推論，較 Apple Silicon 慢）。
 
 ## 從原始碼編譯
@@ -88,6 +103,7 @@ bash ~/.local/share/t-whisper/uninstall.sh   # 或 repo 內 ./uninstall.sh
 ## 技術
 
 - 推論：whisper-rs（whisper.cpp）；Apple Silicon Metal、Intel CPU
+- 說話者分離：sherpa-onnx（pyannote 分段 + 3D-Speaker CAM++ 中文聲紋），靜態連結進執行檔
 - 錄音：cpal（純 Rust）；音檔解碼：symphonia（純 Rust，免 ffmpeg）
 - 繁體：OpenCC s2twp
-- 唯一外部依賴：`opencc`
+- 單一執行檔（~33MB，含 whisper.cpp + sherpa-onnx + onnxruntime 靜態連結）；唯一外部依賴：`opencc`

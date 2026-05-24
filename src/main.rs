@@ -208,6 +208,7 @@ fn emit_result(
     threshold: Option<f32>,
 ) -> Result<()> {
     if diarize {
+        models::ensure_diarize_models(false)?;
         ui::info("說話者分離中…");
         let t0 = Instant::now();
         let turns = diarize::diarize(samples, speakers, threshold.unwrap_or(0.7))?;
@@ -373,9 +374,13 @@ fn cmd_models(action: &Option<ModelsAction>) -> Result<()> {
             Ok(())
         }
         Some(ModelsAction::Pull { name }) => {
-            models::ensure(name, true)?;
-            models::list();
-            Ok(())
+            if name == "diarize" {
+                models::ensure_diarize_models(true)
+            } else {
+                models::ensure(name, true)?;
+                models::list();
+                Ok(())
+            }
         }
         Some(ModelsAction::Rm { name }) => models::remove(name),
         Some(ModelsAction::Picker) => models::picker(),
@@ -412,6 +417,11 @@ fn cmd_doctor(_cfg: &Config) -> Result<()> {
     if !has_model {
         ui::warn("尚無模型 → t-whisper models pull turbo");
         problems += 1;
+    }
+    if models::diarize_models_present() {
+        ui::ok("說話者分離模型（diarize）");
+    } else {
+        ui::info("（diarize 模型未下載；首次 --diarize 會自動下載）");
     }
 
     let mics = capture::list_input_devices();
