@@ -8,11 +8,18 @@
 
 ## 安裝
 
+**Homebrew（推薦）**：
+```bash
+brew install sssuperman/tap/t-whisper
+```
+更新：`brew upgrade t-whisper`。
+
+**或一行 curl 安裝**：
 ```bash
 curl -fsSL https://raw.githubusercontent.com/sssuperman/T-Whisper/main/install.sh | bash
 ```
 
-whisper.cpp 已**編入執行檔**，安裝時不需裝 whisper-cpp；只會裝 `opencc`（繁體輸出用）。
+whisper.cpp / sherpa-onnx 已**編入執行檔**，安裝時不需裝它們；只會裝 `opencc`（繁體輸出用）。
 裝完先檢查：
 
 ```bash
