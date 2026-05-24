@@ -3,9 +3,7 @@
 use crate::audio;
 use anyhow::{Context, Result, bail};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 /// 列出輸入裝置名稱。
 pub fn list_input_devices() -> Vec<String> {
@@ -93,17 +91,6 @@ pub fn open_stream(mic: &str) -> Result<(cpal::Stream, SharedBuf, u32, String)> 
     .context("建立錄音串流失敗")?;
     stream.play().context("啟動錄音失敗")?;
     Ok((stream, buf, sample_rate, dev_name))
-}
-
-/// 錄音直到 `stop` 為 true；回傳 (16k mono f32, 裝置名稱)。
-pub fn record(mic: &str, stop: Arc<AtomicBool>) -> Result<(Vec<f32>, String)> {
-    let (stream, buf, sample_rate, dev_name) = open_stream(mic)?;
-    while !stop.load(Ordering::Relaxed) {
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    drop(stream);
-    let samples = std::mem::take(&mut *buf.lock().unwrap());
-    Ok((audio::resample_to_16k(&samples, sample_rate), dev_name))
 }
 
 /// 把 16k mono f32 寫成 16-bit PCM WAV。

@@ -2,6 +2,7 @@
 mod audio;
 mod capture;
 mod config;
+mod diarize;
 mod env;
 mod live;
 mod models;
@@ -16,6 +17,7 @@ use std::io::{IsTerminal, Read};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 use transcribe::Segment;
 
 #[derive(Parser)]
@@ -49,10 +51,34 @@ enum Cmd {
         #[arg(long)]
         sliding: bool,
     },
-    /// 錄音 → 結束後整段精準轉錄
-    Rec,
+    /// 錄音 → 結束後整段精準轉錄（錄音中顯示即時粗略預覽）
+    Rec {
+        /// 標出說話者（diarization）
+        #[arg(long)]
+        diarize: bool,
+        /// 指定說話者人數（不給則自動估算）
+        #[arg(long)]
+        speakers: Option<i32>,
+        /// 自動估算時的合併門檻（越高越願意合併、群越少；預設 0.7）
+        #[arg(long)]
+        threshold: Option<f32>,
+        /// 關閉錄音中的即時預覽
+        #[arg(long)]
+        no_preview: bool,
+    },
     /// 轉現成音檔／影片
-    File { path: String },
+    File {
+        path: String,
+        /// 標出說話者（diarization）
+        #[arg(long)]
+        diarize: bool,
+        /// 指定說話者人數（不給則自動估算）
+        #[arg(long)]
+        speakers: Option<i32>,
+        /// 自動估算時的合併門檻（越高越願意合併、群越少；預設 0.7）
+        #[arg(long)]
+        threshold: Option<f32>,
+    },
     /// 簡轉繁（檔案／資料夾／stdin）
     Trad {
         target: Option<String>,
@@ -99,7 +125,12 @@ fn main() {
     let model_override = cli.model.clone();
 
     let res = match cli.cmd {
-        Cmd::File { ref path } => cmd_file(path, &cfg, model_override.as_deref()),
+        Cmd::File {
+            ref path,
+            diarize,
+            speakers,
+            threshold,
+        } => cmd_file(path, &cfg, model_override.as_deref(), diarize, speakers, threshold),
         Cmd::Trad {
             ref target,
             ref out,
@@ -107,7 +138,19 @@ fn main() {
         Cmd::Models { ref action } => cmd_models(action),
         Cmd::Doctor => cmd_doctor(&cfg),
         Cmd::Mics => cmd_mics(),
-        Cmd::Rec => cmd_rec(&cfg, model_override.as_deref()),
+        Cmd::Rec {
+            diarize,
+            speakers,
+            threshold,
+            no_preview,
+        } => cmd_rec(
+            &cfg,
+            model_override.as_deref(),
+            diarize,
+            speakers,
+            threshold,
+            no_preview,
+        ),
         Cmd::Live { sliding } => cmd_live(&cfg, model_override.as_deref(), sliding),
         Cmd::Update => {
             ui::info("update：請重跑安裝指令或 git pull（自動更新建置中）");
@@ -125,7 +168,14 @@ fn main() {
     }
 }
 
-fn cmd_file(path: &str, cfg: &Config, model_override: Option<&str>) -> Result<()> {
+fn cmd_file(
+    path: &str,
+    cfg: &Config,
+    model_override: Option<&str>,
+    diarize: bool,
+    speakers: Option<i32>,
+    threshold: Option<f32>,
+) -> Result<()> {
     if !std::path::Path::new(path).is_file() {
         anyhow::bail!("找不到檔案：{path}");
     }
@@ -136,10 +186,42 @@ fn cmd_file(path: &str, cfg: &Config, model_override: Option<&str>) -> Result<()
     ui::info("前處理音訊（→ 16k mono）…");
     let samples = audio::decode_to_whisper(path)?;
     ui::info(&format!("轉錄中（{} + beam {}）…", model_name, cfg.beam));
-
+    let t0 = Instant::now();
     let segs = transcribe::transcribe_file(&model, &samples, &cfg.lang, cfg.beam)?;
+    ui::info(&format!(
+        "轉錄耗時 {:.1}s（音長 {}s）",
+        t0.elapsed().as_secs_f32(),
+        samples.len() / 16000
+    ));
     let out_path = Path::new(path).with_extension("txt");
-    emit_segments(&segs, cfg, &out_path)
+    emit_result(&segs, &samples, cfg, &out_path, diarize, speakers, threshold)
+}
+
+/// 輸出逐字稿：開 diarize 時附 [說話者 N]，否則時間戳逐行。file / rec 共用。
+fn emit_result(
+    segs: &[Segment],
+    samples: &[f32],
+    cfg: &Config,
+    out_path: &Path,
+    diarize: bool,
+    speakers: Option<i32>,
+    threshold: Option<f32>,
+) -> Result<()> {
+    if diarize {
+        models::ensure_diarize_models(false)?;
+        ui::info("說話者分離中…");
+        let t0 = Instant::now();
+        let turns = diarize::diarize(samples, speakers, threshold.unwrap_or(0.7))?;
+        ui::info(&format!("說話者分離耗時 {:.1}s", t0.elapsed().as_secs_f32()));
+        let to_trad = cfg.to_traditional;
+        let body = diarize::merge_lines(segs, &turns, |s| trad::to_traditional(&s.text, to_trad));
+        print!("{body}");
+        std::fs::write(out_path, &body).context("寫入逐字稿失敗")?;
+        ui::ok(&format!("逐字稿（含說話者）：{}", out_path.display()));
+        Ok(())
+    } else {
+        emit_segments(segs, cfg, out_path)
+    }
 }
 
 /// 印出 + 存檔（繁體、絕對時間戳）；file / rec 共用。
@@ -195,22 +277,52 @@ fn cmd_mics() -> Result<()> {
     Ok(())
 }
 
-fn cmd_rec(cfg: &Config, model_override: Option<&str>) -> Result<()> {
+fn cmd_rec(
+    cfg: &Config,
+    model_override: Option<&str>,
+    diarize: bool,
+    speakers: Option<i32>,
+    threshold: Option<f32>,
+    no_preview: bool,
+) -> Result<()> {
     let model_name = model_override.unwrap_or(&cfg.model);
-    let model = models::resolve(model_name, false)?;
+    let model = models::resolve(model_name, false)?; // 結束後精準轉錄用
     transcribe::init_quiet();
 
     let stop = Arc::new(AtomicBool::new(false));
     let s2 = stop.clone();
     ctrlc::set_handler(move || s2.store(true, Ordering::Relaxed)).ok();
 
-    ui::info("● 錄音中…（按 Ctrl+C 停止並開始精準轉錄）");
-    let (samples, dev) = capture::record(&cfg.mic, stop)?;
-    if samples.is_empty() {
+    let (stream, buf, native_rate, dev) = capture::open_stream(&cfg.mic)?;
+    ui::info(&format!("● 錄音中（裝置：{dev}）…按 Ctrl+C 停止並精準轉錄"));
+
+    if no_preview {
+        while !stop.load(Ordering::Relaxed) {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    } else {
+        ui::info("（下方為即時粗略預覽，最終以結束後的精準轉錄為準）");
+        ui::info("------------------------------------------------------------");
+        // 預覽用 turbo（快、beam 1）；沒下載就退回主模型
+        let preview_path = models::path("turbo").unwrap_or_else(|| model.clone());
+        match transcribe::Transcriber::new(&preview_path, &cfg.lang, 1) {
+            Ok(ptr) => live::preview_loop(&ptr, cfg, &buf, native_rate, &stop),
+            Err(_) => {
+                while !stop.load(Ordering::Relaxed) {
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            }
+        }
+    }
+    drop(stream);
+
+    let full = std::mem::take(&mut *buf.lock().unwrap());
+    if full.is_empty() {
         ui::warn("沒有錄到音訊（請到 系統設定 → 隱私權與安全性 → 麥克風 開啟權限）");
         return Ok(());
     }
-    ui::info(&format!("裝置：{dev}，長度約 {} 秒", samples.len() / 16000));
+    let samples = audio::resample_to_16k(&full, native_rate);
+    ui::info(&format!("錄音長度約 {} 秒", samples.len() / 16000));
 
     let outdir = PathBuf::from(&cfg.outdir);
     std::fs::create_dir_all(&outdir)?;
@@ -219,8 +331,22 @@ fn cmd_rec(cfg: &Config, model_override: Option<&str>) -> Result<()> {
     capture::write_wav_16k(&wav, &samples)?;
 
     ui::info(&format!("轉錄中（{model_name} + beam {}）…", cfg.beam));
+    let t0 = Instant::now();
     let segs = transcribe::transcribe_file(&model, &samples, &cfg.lang, cfg.beam)?;
-    emit_segments(&segs, cfg, &outdir.join(format!("{stamp}.txt")))?;
+    ui::info(&format!(
+        "轉錄耗時 {:.1}s（音長 {}s）",
+        t0.elapsed().as_secs_f32(),
+        samples.len() / 16000
+    ));
+    emit_result(
+        &segs,
+        &samples,
+        cfg,
+        &outdir.join(format!("{stamp}.txt")),
+        diarize,
+        speakers,
+        threshold,
+    )?;
     ui::ok(&format!("原始錄音：{}", wav.display()));
     Ok(())
 }
@@ -248,9 +374,13 @@ fn cmd_models(action: &Option<ModelsAction>) -> Result<()> {
             Ok(())
         }
         Some(ModelsAction::Pull { name }) => {
-            models::ensure(name, true)?;
-            models::list();
-            Ok(())
+            if name == "diarize" {
+                models::ensure_diarize_models(true)
+            } else {
+                models::ensure(name, true)?;
+                models::list();
+                Ok(())
+            }
         }
         Some(ModelsAction::Rm { name }) => models::remove(name),
         Some(ModelsAction::Picker) => models::picker(),
@@ -287,6 +417,11 @@ fn cmd_doctor(_cfg: &Config) -> Result<()> {
     if !has_model {
         ui::warn("尚無模型 → t-whisper models pull turbo");
         problems += 1;
+    }
+    if models::diarize_models_present() {
+        ui::ok("說話者分離模型（diarize）");
+    } else {
+        ui::info("（diarize 模型未下載；首次 --diarize 會自動下載）");
     }
 
     let mics = capture::list_input_devices();

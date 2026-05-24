@@ -113,6 +113,34 @@ impl Vad {
     }
 }
 
+/// rec 用的即時粗略預覽：不抽走樣本（只讀最近視窗），單行刷新顯示。
+/// 真正的精準轉錄在錄音結束後對全部樣本做。
+pub fn preview_loop(tr: &Transcriber, cfg: &Config, buf: &capture::SharedBuf, rate: u32, stop: &Arc<AtomicBool>) {
+    let window = rate as usize * 6; // 看最近 6s
+    while !stop.load(Ordering::Relaxed) {
+        std::thread::sleep(Duration::from_millis(700));
+        // 只複製最近視窗（不抽走，錄音保留全部樣本）
+        let snap: Vec<f32> = {
+            let g = buf.lock().unwrap();
+            let start = g.len().saturating_sub(window);
+            g[start..].to_vec()
+        };
+        if snap.is_empty() || rms(&snap) < 0.005 {
+            continue; // 靜音時不轉（避免幻聽雜訊）
+        }
+        let audio16 = audio::resample_to_16k(&snap, rate);
+        if let Ok(segs) = tr.run(&audio16) {
+            let text: String = segs.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join("");
+            let text = trad::to_traditional(text.trim(), cfg.to_traditional);
+            if !text.is_empty() {
+                render_partial(&text);
+            }
+        }
+    }
+    print!("\r\x1b[2K"); // 清掉預覽行
+    let _ = std::io::stdout().flush();
+}
+
 // ---- VAD 模式：偵測停頓出整句（committed lines）----
 fn run_vad(
     tr: &Transcriber,

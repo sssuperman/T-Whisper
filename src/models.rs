@@ -121,6 +121,75 @@ pub fn remove(name: &str) -> Result<()> {
     Ok(())
 }
 
+// ---- diarization 模型（sherpa-onnx：pyannote 分段 + 中文 CAM++ 聲紋）----
+const SEG_URL: &str = "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2";
+const EMB_URL: &str = "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_campplus_sv_zh-cn_16k-common.onnx";
+
+pub fn diarize_dir() -> PathBuf {
+    env::models_dir().join("diarize")
+}
+pub fn diarize_models_present() -> bool {
+    diarize_dir().join("segmentation.onnx").is_file() && diarize_dir().join("embedding.onnx").is_file()
+}
+
+/// 確保 diarization 模型存在，必要時（互動或 --yes）下載（約 35MB）。
+pub fn ensure_diarize_models(assume_yes: bool) -> Result<()> {
+    if diarize_models_present() {
+        return Ok(());
+    }
+    if !assume_yes {
+        ui::warn("尚未下載說話者分離模型（約 35MB）");
+        eprint!("要現在下載嗎？[Y/n] ");
+        io::stderr().flush().ok();
+        let mut ans = String::new();
+        io::stdin().read_line(&mut ans).ok();
+        if ans.trim().eq_ignore_ascii_case("n") {
+            bail!("需要分離模型（t-whisper models pull diarize）");
+        }
+    }
+    let dir = diarize_dir();
+    std::fs::create_dir_all(&dir)?;
+
+    // 分段模型（tar.bz2 內含 model.onnx）
+    let seg = dir.join("segmentation.onnx");
+    if !seg.is_file() {
+        ui::info("下載分段模型（pyannote segmentation）…");
+        let tar = dir.join("seg.tar.bz2");
+        curl_to(SEG_URL, &tar)?;
+        let st = Command::new("tar").arg("xjf").arg(&tar).arg("-C").arg(&dir).status()?;
+        if !st.success() {
+            bail!("解壓分段模型失敗");
+        }
+        let extracted = dir.join("sherpa-onnx-pyannote-segmentation-3-0/model.onnx");
+        std::fs::copy(&extracted, &seg).context("複製分段模型失敗")?;
+        let _ = std::fs::remove_file(&tar);
+        let _ = std::fs::remove_dir_all(dir.join("sherpa-onnx-pyannote-segmentation-3-0"));
+    }
+
+    // 中文 CAM++ 聲紋模型
+    let emb = dir.join("embedding.onnx");
+    if !emb.is_file() {
+        ui::info("下載中文聲紋模型（CAM++）…");
+        curl_to(EMB_URL, &emb)?;
+    }
+    ui::ok("說話者分離模型就緒");
+    Ok(())
+}
+
+fn curl_to(url: &str, dest: &PathBuf) -> Result<()> {
+    let st = Command::new("curl")
+        .args(["-L", "--fail", "-o"])
+        .arg(dest)
+        .arg(url)
+        .status()
+        .context("執行 curl 失敗")?;
+    if !st.success() {
+        let _ = std::fs::remove_file(dest);
+        bail!("下載失敗：{url}");
+    }
+    Ok(())
+}
+
 /// 首次執行的互動選單。
 pub fn picker() -> Result<()> {
     if path("turbo").is_some() || path("large-v3").is_some() {
